@@ -1,21 +1,29 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from database.connection import initialize_database
 from services.whatsapp import send_message, send_message_template
 from routes.webhook import router
-
-app = FastAPI()
-app.include_router(router)
 
 class Message(BaseModel):
     template_name: str
     template_language: str
 
-@app.post("/test-message")
-async def send_whatsapp_template_message(message: Message):
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    initialize_database()
+    yield
+
+app = FastAPI(lifespan=lifespan)
+app.include_router(router)
+
+@app.post("/send-template")
+async def send_whatsapp_template_message(phone_number: str, message_language: str):
     """
-    Tests the WhatsApp message sending functionality.
+    Sends a WhatsApp template message to the specified phone number.
     """
-    result = await send_message_template(template_name=message.template_name, message_language=message.template_language)
+    result = await send_message_template(phone_number=phone_number, message_language=message_language)
 
     return result
 
