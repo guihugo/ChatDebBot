@@ -19,11 +19,11 @@ app = FastAPI(lifespan=lifespan)
 app.include_router(router)
 
 @app.post("/send-template")
-async def send_whatsapp_template_message(phone_number: str, message_language: str):
+async def send_whatsapp_template_message(phone_number: str, template_dict: dict):
     """
     Sends a WhatsApp template message to the specified phone number.
     """
-    result = await send_message_template(phone_number=phone_number, message_language=message_language)
+    result = await send_message_template(phone_number=phone_number, template_dict=template_dict)
 
     return result
 

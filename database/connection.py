@@ -10,7 +10,7 @@ def initialize_database():
                 message_id TEXT NOT NULL UNIQUE,
                 sender_id TEXT NOT NULL,
                 sender_phone_number TEXT NOT NULL,
-                message TEXT NOT NULL,
+                message_text TEXT NOT NULL,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -28,7 +28,7 @@ def kill_database_connection(con):
     if con:
         con.close()
 
-def save_message_to_database(message_id: str, sender_id: str, sender_phone_number: str, message: str):
+def save_message_to_database(message_id: str, sender_id: str, sender_phone_number: str, message_text: str):
     """
     Saves a message to the SQLite database.
 
@@ -36,15 +36,15 @@ def save_message_to_database(message_id: str, sender_id: str, sender_phone_numbe
         message_id (str): The unique ID of the message.
         sender_id (str): The ID of the sender.
         sender_phone_number (str): The phone number of the sender.
-        message (str): The content of the message.
+        message_text (str): The content of the message.
     """
     con = sqlite3.connect("deb_bot.db")
     try:
         cursor = con.cursor()
         cursor.execute("""
-            INSERT INTO messages (message_id, sender_id, sender_phone_number, message)
+            INSERT INTO messages (message_id, sender_id, sender_phone_number, message_text)
             VALUES (?, ?, ?, ?)
-        """, (message_id, sender_id, sender_phone_number, message))
+        """, (message_id, sender_id, sender_phone_number, message_text))
         con.commit()
         return True
     except sqlite3.IntegrityError:

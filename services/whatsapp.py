@@ -31,7 +31,7 @@ async def send_message_template(phone_number: str, template_dict: dict):
             }
         }
     }   
-    
+
     return await send_post_request(url, headers, body)
 
 
