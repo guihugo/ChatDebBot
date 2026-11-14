@@ -4,6 +4,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+def get_url ():
+    return getenv("URL")
 def get_meta_key():
     return getenv("META_KEY")
 
