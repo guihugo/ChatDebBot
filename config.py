@@ -11,3 +11,6 @@ def get_meta_key():
 
 def get_phone_number():
     return getenv("PHONE_NUMBER_RECEIVER")
+
+def get_secret_webhook():
+    return getenv("SECRET_WEBHOOK")

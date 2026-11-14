@@ -1,20 +1,17 @@
 import httpx
-from config import get_meta_key, get_phone_number, get_url
+from config import get_meta_key, get_url
 
 url = get_url()
+meta_key = get_meta_key()
 
-async def send_message(template_name: str, message_language: str):
+async def send_message_template(phone_number: str, template_dict: dict):
     """
     Sends a message to the WhatsApp API.
-    
+
     Args:
-        template_name (str): The type of the message (e.g., "text", "template").
-        message_language (str): The language of the message.
+        phone_number (str): The phone number to send the message to.
+        template_dict (dict): A dictionary containing the template name and language.
     """
-
-    meta_key = get_meta_key()
-    phone_number = get_phone_number()
-
 
     if not meta_key or not phone_number:
             return {"error": "META_KEY or PHONE_NUMBER_RECEIVER is not set in the environment variables."}
@@ -28,18 +25,62 @@ async def send_message(template_name: str, message_language: str):
         "to": phone_number,
         "type": "template",
         "template": {
-            "name": template_name,
+            "name": template_dict.get("name"),
             "language": {
-                "code": message_language
+                "code": template_dict.get("language")
             }
         }
     }   
     
+    return await send_post_request(url, headers, body)
+
+
+async def send_message(phone_number: str, message: str):
+    """
+    Sends a message to the WhatsApp API.
+
+    Args:
+        phone_number (str): The phone number to send the message to.
+        message (str): The message to send.
+    """
+
+    if not meta_key or not phone_number:
+            return {"error": "META_KEY or PHONE_NUMBER_RECEIVER is not set in the environment variables."}
+    headers = {
+        "Authorization": f"Bearer {meta_key}",
+        "Content-Type": "application/json"
+    }
+
+    body = {
+        "messaging_product": "whatsapp",
+        "to": phone_number,
+        "type": "text",
+        "text": {
+            "preview_url": False,
+            "body": message
+        }
+    }   
+    
+    return await send_post_request(url, headers, body)
+
+
+async def send_post_request(url: str, headers: dict, body: dict):
+    """
+    Sends a POST request to the specified URL with the given headers and body.
+
+    Args:
+        url (str): The URL to send the request to.
+        headers (dict): The headers to include in the request.
+        body (dict): The body of the request.
+
+    Returns:
+        dict: The response from the server.
+    """
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(url, headers=headers, json=body)
             response.raise_for_status()
-            res = response.json()
+            return response.json()
 
     except httpx.HTTPStatusError as exc:
         return {
@@ -53,5 +94,3 @@ async def send_message(template_name: str, message_language: str):
             "error": "Could not connect to Meta API",
             "details": str(exc)
         }
-
-    return res
