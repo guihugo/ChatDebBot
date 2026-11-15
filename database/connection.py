@@ -1,8 +1,13 @@
 import sqlite3
+import json
+from os import getenv
+
+
+DATABASE_PATH = getenv("DATABASE_PATH", "deb_bot.db")
 
 
 def initialize_database():
-    con = sqlite3.connect("deb_bot.db")
+    con = sqlite3.connect(DATABASE_PATH)
     try:
         cursor = con.cursor()
         cursor.execute("""
@@ -18,12 +23,50 @@ def initialize_database():
         cursor.execute("""
                 CREATE TABLE IF NOT EXISTS debts (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        owner_phone_number TEXT,
                         debtor_name TEXT NOT NULL,
                         amount REAL NOT NULL,
                         due_date DATE NOT NULL,
                         status TEXT NOT NULL,
+                        reminder_sent INTEGER NOT NULL DEFAULT 0,
                         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                 )        
+        """)
+        debt_columns = {
+            row[1] for row in cursor.execute("PRAGMA table_info(debts)")
+        }
+        if "owner_phone_number" not in debt_columns:
+            cursor.execute(
+                "ALTER TABLE debts ADD COLUMN owner_phone_number TEXT"
+            )
+        if "reminder_sent" not in debt_columns:
+            cursor.execute(
+                "ALTER TABLE debts ADD COLUMN reminder_sent INTEGER NOT NULL DEFAULT 0"
+            )
+        cursor.execute("""
+                CREATE TABLE IF NOT EXISTS pending_debts (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        sender_phone_number TEXT NOT NULL UNIQUE,
+                        debtor_name TEXT NOT NULL,
+                        amount REAL NOT NULL,
+                        due_date DATE NOT NULL,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+        """)
+        cursor.execute("""
+                CREATE TABLE IF NOT EXISTS pending_actions (
+                        sender_phone_number TEXT PRIMARY KEY,
+                        action TEXT NOT NULL,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+        """)
+        cursor.execute("""
+                CREATE TABLE IF NOT EXISTS pending_selections (
+                        sender_phone_number TEXT PRIMARY KEY,
+                        action TEXT NOT NULL,
+                        payload TEXT NOT NULL,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
         """)
         con.commit()
     finally:
@@ -53,7 +96,7 @@ def save_message_to_database(
         sender_phone_number (str): The phone number of the sender.
         message_text (str): The content of the message.
     """
-    con = sqlite3.connect("deb_bot.db")
+    con = sqlite3.connect(DATABASE_PATH)
     try:
         cursor = con.cursor()
         cursor.execute(
@@ -82,7 +125,7 @@ def is_message_processed(message_id: str) -> bool:
     Returns:
         bool: True if the message has been processed, False otherwise.
     """
-    con = sqlite3.connect("deb_bot.db")
+    con = sqlite3.connect(DATABASE_PATH)
     try:
         cursor = con.cursor()
         cursor.execute(
@@ -96,7 +139,13 @@ def is_message_processed(message_id: str) -> bool:
     finally:
         con.close()
 
-def save_debt_to_database(debtor_name: str, amount: float, due_date: str, status: str):
+def save_debt_to_database(
+    owner_phone_number: str,
+    debtor_name: str,
+    amount: float,
+    due_date: str,
+    status: str,
+):
     """
     Saves a debt record to the SQLite database.
 
@@ -106,21 +155,205 @@ def save_debt_to_database(debtor_name: str, amount: float, due_date: str, status
         due_date (str): The due date of the debt in 'YYYY-MM-DD' format.
         status (str): The status of the debt (e.g., 'pending', 'paid').
     """
-    con = sqlite3.connect("deb_bot.db")
+    con = sqlite3.connect(DATABASE_PATH)
     try:
         cursor = con.cursor()
         cursor.execute(
             """
-            INSERT INTO debts (debtor_name, amount, due_date, status)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO debts (
+                owner_phone_number, debtor_name, amount, due_date, status
+            )
+            VALUES (?, ?, ?, ?, ?)
         """,
-            (debtor_name, amount, due_date, status),
+            (owner_phone_number, debtor_name, amount, due_date, status),
         )
         con.commit()
     finally:
         con.close()
 
-def get_debts_from_person(debtor_name: str):
+
+def save_pending_debt(
+    sender_phone_number: str,
+    debtor_name: str,
+    amount: float,
+    due_date: str,
+) -> None:
+    """Stores the debt details until the user confirms the action."""
+    con = sqlite3.connect(DATABASE_PATH)
+    try:
+        con.execute(
+            """
+            INSERT INTO pending_debts (
+                sender_phone_number, debtor_name, amount, due_date
+            )
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(sender_phone_number) DO UPDATE SET
+                debtor_name = excluded.debtor_name,
+                amount = excluded.amount,
+                due_date = excluded.due_date,
+                timestamp = CURRENT_TIMESTAMP
+            """,
+            (sender_phone_number, debtor_name, amount, due_date),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def get_pending_debt(sender_phone_number: str):
+    con = sqlite3.connect(DATABASE_PATH)
+    try:
+        cursor = con.execute(
+            """
+            SELECT debtor_name, amount, due_date
+            FROM pending_debts
+            WHERE sender_phone_number = ?
+            """,
+            (sender_phone_number,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+
+        return {
+            "debtor_name": row[0],
+            "amount": row[1],
+            "due_date": row[2],
+        }
+    finally:
+        con.close()
+
+
+def delete_pending_debt(sender_phone_number: str) -> None:
+    con = sqlite3.connect(DATABASE_PATH)
+    try:
+        con.execute(
+            "DELETE FROM pending_debts WHERE sender_phone_number = ?",
+            (sender_phone_number,),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def save_pending_action(sender_phone_number: str, action: str) -> None:
+    con = sqlite3.connect(DATABASE_PATH)
+    try:
+        con.execute(
+            """
+            INSERT INTO pending_actions (sender_phone_number, action)
+            VALUES (?, ?)
+            ON CONFLICT(sender_phone_number) DO UPDATE SET
+                action = excluded.action,
+                timestamp = CURRENT_TIMESTAMP
+            """,
+            (sender_phone_number, action),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def get_pending_action(sender_phone_number: str):
+    con = sqlite3.connect(DATABASE_PATH)
+    try:
+        cursor = con.execute(
+            """
+            SELECT action
+            FROM pending_actions
+            WHERE sender_phone_number = ?
+            """,
+            (sender_phone_number,),
+        )
+        row = cursor.fetchone()
+        return row[0] if row else None
+    finally:
+        con.close()
+
+
+def delete_pending_action(sender_phone_number: str) -> None:
+    con = sqlite3.connect(DATABASE_PATH)
+    try:
+        con.execute(
+            "DELETE FROM pending_actions WHERE sender_phone_number = ?",
+            (sender_phone_number,),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def save_pending_selection(
+    sender_phone_number: str, action: str, payload: dict
+) -> None:
+    con = sqlite3.connect(DATABASE_PATH)
+    try:
+        con.execute(
+            """
+            INSERT INTO pending_selections (
+                sender_phone_number, action, payload
+            )
+            VALUES (?, ?, ?)
+            ON CONFLICT(sender_phone_number) DO UPDATE SET
+                action = excluded.action,
+                payload = excluded.payload,
+                timestamp = CURRENT_TIMESTAMP
+            """,
+            (sender_phone_number, action, json.dumps(payload)),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def get_pending_selection(sender_phone_number: str):
+    con = sqlite3.connect(DATABASE_PATH)
+    try:
+        row = con.execute(
+            """
+            SELECT action, payload
+            FROM pending_selections
+            WHERE sender_phone_number = ?
+            """,
+            (sender_phone_number,),
+        ).fetchone()
+        if not row:
+            return None
+        return {"action": row[0], "payload": json.loads(row[1])}
+    finally:
+        con.close()
+
+
+def delete_pending_selection(sender_phone_number: str) -> None:
+    con = sqlite3.connect(DATABASE_PATH)
+    try:
+        con.execute(
+            "DELETE FROM pending_selections WHERE sender_phone_number = ?",
+            (sender_phone_number,),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def get_debtor_names(owner_phone_number: str) -> list[str]:
+    con = sqlite3.connect(DATABASE_PATH)
+    try:
+        rows = con.execute(
+            """
+            SELECT DISTINCT debtor_name
+            FROM debts
+            WHERE owner_phone_number = ?
+            ORDER BY debtor_name
+            """,
+            (owner_phone_number,),
+        ).fetchall()
+        return [row[0] for row in rows]
+    finally:
+        con.close()
+
+
+def get_debts_from_person(owner_phone_number: str, debtor_name: str):
     """
     Retrieves all debts associated with a specific debtor from the SQLite database.
 
@@ -130,16 +363,16 @@ def get_debts_from_person(debtor_name: str):
     Returns:
         list: A list of dictionaries containing debt records.
     """
-    con = sqlite3.connect("deb_bot.db")
+    con = sqlite3.connect(DATABASE_PATH)
     try:
         cursor = con.cursor()
         cursor.execute(
             """
             SELECT id, debtor_name, amount, due_date, status, timestamp
             FROM debts
-            WHERE debtor_name = ?
+            WHERE owner_phone_number = ? AND debtor_name = ?
         """,
-            (debtor_name,),
+            (owner_phone_number, debtor_name),
         )
         rows = cursor.fetchall()
         debts = [
@@ -154,5 +387,98 @@ def get_debts_from_person(debtor_name: str):
             for row in rows
         ]
         return debts
+    finally:
+        con.close()
+
+
+def get_all_debts(owner_phone_number: str):
+    """Retrieves every debt owned by the specified user."""
+    con = sqlite3.connect(DATABASE_PATH)
+    try:
+        cursor = con.execute(
+            """
+            SELECT id, debtor_name, amount, due_date, status, timestamp
+            FROM debts
+            WHERE owner_phone_number = ?
+            ORDER BY due_date, id
+            """,
+            (owner_phone_number,),
+        )
+        return [
+            {
+                "id": row[0],
+                "debtor_name": row[1],
+                "amount": row[2],
+                "due_date": row[3],
+                "status": row[4],
+                "timestamp": row[5],
+            }
+            for row in cursor.fetchall()
+        ]
+    finally:
+        con.close()
+
+def get_debts_ready_for_reminder():
+    con = sqlite3.connect(DATABASE_PATH)
+    try:
+        cursor = con.execute(
+            """
+            SELECT id, owner_phone_number, debtor_name, amount, due_date
+            FROM debts
+            WHERE status = 'debt'
+              AND reminder_sent = 0
+              AND due_date <= DATE('now')
+              AND owner_phone_number IS NOT NULL
+            """
+        )
+        return [
+            {
+                "id": row[0],
+                "owner_phone_number": row[1],
+                "debtor_name": row[2],
+                "amount": row[3],
+                "due_date": row[4],
+            }
+            for row in cursor.fetchall()
+        ]
+    finally:
+        con.close()
+
+
+def mark_reminder_sent(debt_id: int, owner_phone_number: str) -> bool:
+    con = sqlite3.connect(DATABASE_PATH)
+    try:
+        cursor = con.execute(
+            """
+            UPDATE debts
+            SET reminder_sent = 1
+            WHERE id = ?
+              AND owner_phone_number = ?
+              AND status = 'debt'
+              AND reminder_sent = 0
+            """,
+            (debt_id, owner_phone_number),
+        )
+        con.commit()
+        return cursor.rowcount == 1
+    finally:
+        con.close()
+
+
+def mark_debt_as_paid(debt_id: int, owner_phone_number: str) -> bool:
+    con = sqlite3.connect(DATABASE_PATH)
+    try:
+        cursor = con.execute(
+            """
+            UPDATE debts
+            SET status = 'paid'
+            WHERE id = ?
+              AND owner_phone_number = ?
+              AND status = 'debt'
+            """,
+            (debt_id, owner_phone_number),
+        )
+        con.commit()
+        return cursor.rowcount == 1
     finally:
         con.close()

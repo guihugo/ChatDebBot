@@ -63,6 +63,40 @@ async def send_message(phone_number: str, message: str):
     
     return await send_post_request(url, headers, body)
 
+async def send_button_message(phone_number: str, message: str, buttons: list):
+    """
+    Sends a button message to the WhatsApp API.
+
+    Args:
+        phone_number (str): The phone number to send the message to.
+        message (str): The message to send.
+        buttons (list): A list of button dictionaries.
+    """
+
+    if not meta_key or not phone_number:
+            return {"error": "META_KEY or PHONE_NUMBER_RECEIVER is not set in the environment variables."}
+    headers = {
+        "Authorization": f"Bearer {meta_key}",
+        "Content-Type": "application/json"
+    }
+
+    body = {
+        "messaging_product": "whatsapp",
+        "to": phone_number,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {
+                "text": message
+            },
+            "action": {
+                "buttons": buttons
+            }
+        }
+    }   
+    
+    return await send_post_request(url, headers, body)
+
 
 async def send_post_request(url: str, headers: dict, body: dict):
     """

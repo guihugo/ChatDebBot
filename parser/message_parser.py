@@ -1,5 +1,6 @@
 
 import re
+from datetime import date, timedelta
 
 INTENTS = {
     "REGISTER_PAYMENT": ["pagou", "recebi", "recebido", "pago"],
@@ -20,9 +21,19 @@ STOPWORDS = [
 QUESTION_WORDS = ["quanto", "quem", "qual", "quais", "onde"]
 
 
+def extract_due_date(message_text: str) -> str:
+    match = re.search(r"\bdaqui\s+(\d+)\s+dias?\b", message_text)
+    if not match:
+        return date.today().isoformat()
+
+    due_date = date.today() + timedelta(days=int(match.group(1)))
+    return due_date.isoformat()
+
+
 def parse_message(message):
     message_text = message.get("message_text", "").lower()
     words = message_text.split()
+    due_date = extract_due_date(message_text)
 
     # 1. Extract amounts
     amount_matches = re.findall(
@@ -77,7 +88,8 @@ def parse_message(message):
         "intent": intent,
         "entities": {
             "amount": amounts[0] if amounts else None,
-            "person": name
+            "person": name,
+            "due_date": due_date,
         },
         "needs_confirmation": True
     }
