@@ -3,6 +3,8 @@ import unittest
 from handlers.messages import (
     format_debts_message,
     format_due_date,
+    is_all_debts_question,
+    is_all_debts_request,
     is_greeting,
     normalize_name,
 )
@@ -44,6 +46,14 @@ class MessageFormattingTests(unittest.TestCase):
 
     def test_normalizes_accents_for_name_comparison(self):
         self.assertEqual(normalize_name("Fábio"), normalize_name("Fabio"))
+
+    def test_recognizes_all_debts_commands(self):
+        for request in ("Todos", "Todas", "todas as dívidas"):
+            with self.subTest(request=request):
+                self.assertTrue(is_all_debts_request(request))
+
+    def test_recognizes_all_debts_questions(self):
+        self.assertTrue(is_all_debts_question("Quem me deve?"))
 
 
 if __name__ == "__main__":

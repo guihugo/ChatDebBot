@@ -4,7 +4,11 @@ from datetime import date, timedelta
 
 INTENTS = {
     "REGISTER_PAYMENT": ["pagou", "recebi", "recebido", "pago"],
-    "LIST_DEBTS": ["pendente", "dívida", "quem", "quanto", "?"],
+    "LIST_DEBTS": [
+        "pendente", "pendentes", "dívida", "divida", "dívidas", "dividas",
+        "cobrança", "cobranca", "cobranças", "cobrancas",
+        "quem", "quanto", "?",
+    ],
     "CREATE_DEBT": ["emprestei", "emprestar", "anotar", "registrar", "criar", "deve"],
 }
 
@@ -14,7 +18,8 @@ STOPWORDS = [
     *PREPOSITIONS,
     "deve", "emprestei", "emprestar", "anotar", "registrar", "criar",
     "pagou", "recebi", "recebido", "pago",
-    "me", "eu", "ele", "ela", "um", "uma",
+    "me",     "divida", "dividas", "cobranca", "cobrancas",
+    "eu", "ele", "ela", "um", "uma",
     "reais", "real", "euros", "euro",
 ]
 
@@ -101,6 +106,8 @@ def parse_message(message):
             name = candidate.capitalize()
             break
 
+    if intent == "UNKNOWN" and has_number and name:
+        intent = "CREATE_DEBT"
 
     return {
         "intent": intent,

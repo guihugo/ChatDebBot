@@ -9,6 +9,9 @@ def get_url ():
 def get_meta_key():
     return getenv("META_KEY")
 
+def get_meta_app_secret():
+    return getenv("META_APP_SECRET")
+
 def get_phone_number():
     return getenv("PHONE_NUMBER_RECEIVER")
 

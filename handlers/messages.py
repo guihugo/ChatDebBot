@@ -1,10 +1,12 @@
 from datetime import date
+import logging
 import re
 import unicodedata
 
 from database.connection import (
     delete_pending_debt,
     delete_pending_action,
+    delete_pending_selection,
     get_all_debts,
     get_debts_from_person,
     get_debtor_names,
@@ -14,13 +16,16 @@ from database.connection import (
     get_pending_selection,
     mark_debt_as_paid,
     save_debt_to_database,
-    save_message_to_database,
+    finish_message_processing,
+    start_message_processing,
     save_pending_action,
     save_pending_selection,
     save_pending_debt,
 )
 from parser.message_parser import parse_message
 from services.whatsapp import send_button_message, send_message
+
+logger = logging.getLogger(__name__)
 
 MENU_BUTTONS = [
     {
@@ -48,22 +53,36 @@ MENU_BUTTONS = [
 
 
 async def message_received_handler(message: dict):
+    claimed = start_message_processing(
+        message_id=message["message_id"],
+        sender_id=message["sender_id"],
+        sender_phone_number=message["sender_phone_number"],
+        message_text=message["message_text"],
+    )
+    if not claimed:
+        logger.debug(
+            "Skipping completed duplicate message",
+            extra={"message_id": message["message_id"]},
+        )
+        return {"status": "duplicate", "payload": message}
+
+    try:
+        result = await _process_message(message)
+    except Exception:
+        finish_message_processing(message["message_id"], "failed")
+        raise
+
+    finish_message_processing(message["message_id"], "completed")
+    return result
+
+
+async def _process_message(message: dict):
     """
     Handles incoming messages and sends a response.
 
     Args:
         message (str): The incoming message to handle.
     """
-    is_new_message = save_message_to_database(
-                message_id=message["message_id"],
-                sender_id=message["sender_id"],
-                sender_phone_number=message["sender_phone_number"],
-                message_text=message["message_text"]
-            )
-    if not is_new_message:
-        print(f"Message with ID {message['message_id']} already exists in the database. Skipping processing.")
-        return {"status": "duplicate", "payload": message}
-
     if "button_payload" in message:
         if message["button_payload"].startswith("menu_"):
             return await handle_menu_selection(message)
@@ -74,7 +93,14 @@ async def message_received_handler(message: dict):
         return await handle_debt_confirmation(message)
 
     if is_greeting(message["message_text"]):
-        return await send_main_menu(message)
+            clear_pending_context(message["sender_phone_number"])
+            return await send_main_menu(message)
+
+    text_menu_payload = get_text_menu_payload(message["message_text"])
+    if text_menu_payload:
+            return await handle_menu_selection(
+                {**message, "button_payload": text_menu_payload}
+            )
 
     pending_action = get_pending_action(message["sender_phone_number"])
     pending_selection = get_pending_selection(message["sender_phone_number"])
@@ -83,7 +109,7 @@ async def message_received_handler(message: dict):
 
     if pending_action == "list_debts":
         delete_pending_action(message["sender_phone_number"])
-        if message["message_text"].strip().lower() == "todas":
+        if is_all_debts_request(message["message_text"]):
             return await list_all_debts(message)
         return await list_debts_for_person(message, message["message_text"].strip())
     if pending_action == "create_debt":
@@ -103,10 +129,18 @@ async def message_received_handler(message: dict):
     else:
         parsed_message = parse_message(message)
 
-    print(f"Parsed message: {parsed_message}")
+    logger.info(
+        "Message intent detected: %s (message=%r, message_id=%s)",
+        parsed_message["intent"],
+        message["message_text"],
+        message["message_id"],
+    )
             
     if parsed_message["intent"] == "REGISTER_PAYMENT":
-        print(f"Received payment registration message from {message['name']}.")
+        logger.info(
+            "Processing payment registration",
+            extra={"message_id": message["message_id"]},
+        )
         person_choices = find_person_choices(
             message["sender_phone_number"],
             parsed_message["entities"]["person"],
@@ -135,6 +169,10 @@ async def message_received_handler(message: dict):
         )
         return {"status": "payment_debt_not_found", "payload": message}
     elif parsed_message["intent"] == "LIST_DEBTS":
+        if is_all_debts_request(message["message_text"]) or is_all_debts_question(
+            message["message_text"]
+        ):
+            return await list_all_debts(message)
         return await list_debts_for_person(
             message,
             parsed_message["entities"]["person"],
@@ -192,6 +230,13 @@ async def message_received_handler(message: dict):
                 }
             ]
         )
+        return {"status": "debt_confirmation_requested", "payload": message}
+
+    await send_message(
+        message["sender_phone_number"],
+        "Não entendi o pedido. Envie 'Oi' para abrir o menu e escolher uma opção.",
+    )
+    return {"status": "unknown_message", "payload": message}
 
 async def handle_debt_confirmation(message: dict):
     """Processes the confirmation button for the user's pending debt."""
@@ -293,6 +338,13 @@ async def handle_person_selection(message: dict):
 
 
 async def handle_text_selection(message: dict, pending: dict):
+    if pending["action"] == "register_payment":
+        await send_message(
+            message["sender_phone_number"],
+            "Escolha uma das cobranças usando os botões enviados.",
+        )
+        return {"status": "payment_selection_requires_button", "payload": message}
+
     normalized_text = normalize_name(message["message_text"])
     choices = pending["payload"]["choices"]
     matches = [
@@ -354,6 +406,7 @@ async def create_debt_from_selection(
 
 
 async def handle_menu_selection(message: dict):
+    clear_pending_context(message["sender_phone_number"])
     instructions = {
         "menu_create_debt": (
             "Para cadastrar uma cobrança, envie algo como: "
@@ -378,6 +431,46 @@ async def handle_menu_selection(message: dict):
 
     await send_message(message["sender_phone_number"], response)
     return {"status": "menu_selection_processed", "payload": message}
+
+
+def clear_pending_context(sender_phone_number: str) -> None:
+    delete_pending_action(sender_phone_number)
+    delete_pending_selection(sender_phone_number)
+
+
+def get_text_menu_payload(text: str) -> str | None:
+    normalized_text = normalize_name(text)
+    menu_options = {
+        "cadastrar cobranca": "menu_create_debt",
+        "listar cobrancas": "menu_list_debts",
+        "atualizar cobranca": "menu_update_debt",
+    }
+    for label, payload in menu_options.items():
+        if label in normalized_text:
+            return payload
+    return None
+
+
+def is_all_debts_request(text: str) -> bool:
+    normalized_text = normalize_name(text).strip(" .!?")
+    return normalized_text in {
+        "todos",
+        "todas",
+        "todos os devedores",
+        "todas as pessoas",
+        "todas as cobrancas",
+        "todas as dividas",
+    }
+
+
+def is_all_debts_question(text: str) -> bool:
+    normalized_text = normalize_name(text).strip(" .!?")
+    return normalized_text in {
+        "quem me deve",
+        "quem deve",
+        "quais sao minhas dividas",
+        "quais sao minhas cobrancas",
+    }
 
 
 async def list_debts_for_person(message: dict, person: str):
@@ -495,12 +588,23 @@ async def ask_person_choice(
 
 async def list_all_debts(message: dict):
     debts = get_all_debts(message["sender_phone_number"])
+    logger.info(
+        "Listing all open debts: count=%s sender=%s",
+        len(debts),
+        message["sender_phone_number"],
+    )
     response_message = format_debts_message(
         name=message["name"],
         person="todas as pessoas",
         debts=debts,
     )
-    await send_message(message["sender_phone_number"], response_message)
+    result = await send_message(message["sender_phone_number"], response_message)
+    if "error" in result:
+        logger.error(
+            "Failed to send debt listing: recipient=%s error=%s",
+            message["sender_phone_number"],
+            result,
+        )
     return {"status": "all_debts_listed", "payload": message}
 
 

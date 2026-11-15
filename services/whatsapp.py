@@ -1,5 +1,9 @@
 import httpx
+import logging
+
 from config import get_meta_key, get_url
+
+logger = logging.getLogger(__name__)
 
 url = get_url()
 meta_key = get_meta_key()
@@ -114,9 +118,19 @@ async def send_post_request(url: str, headers: dict, body: dict):
         async with httpx.AsyncClient() as client:
             response = await client.post(url, headers=headers, json=body)
             response.raise_for_status()
-            return response.json()
+            result = response.json()
+            logger.info(
+                "WhatsApp message sent successfully",
+                extra={"recipient": body.get("to"), "message_type": body.get("type")},
+            )
+            return result
 
     except httpx.HTTPStatusError as exc:
+        logger.error(
+            "WhatsApp API rejected message: status=%s response=%s",
+            exc.response.status_code,
+            exc.response.text,
+        )
         return {
             "error": "Meta API returned an error",  
             "status_code": exc.response.status_code,
@@ -124,6 +138,7 @@ async def send_post_request(url: str, headers: dict, body: dict):
         }
 
     except httpx.RequestError as exc:
+        logger.error("Could not connect to WhatsApp API: %s", exc)
         return {
             "error": "Could not connect to Meta API",
             "details": str(exc)

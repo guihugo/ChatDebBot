@@ -1,9 +1,11 @@
 import sqlite3
 import json
+import logging
 from os import getenv
 
 
 DATABASE_PATH = getenv("DATABASE_PATH", "deb_bot.db")
+logger = logging.getLogger(__name__)
 
 
 def initialize_database():
@@ -17,9 +19,23 @@ def initialize_database():
                 sender_id TEXT NOT NULL,
                 sender_phone_number TEXT NOT NULL,
                 message_text TEXT NOT NULL,
+                processing_status TEXT NOT NULL DEFAULT 'received',
+                processing_started_at DATETIME,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        message_columns = {
+            row[1] for row in cursor.execute("PRAGMA table_info(messages)")
+        }
+        if "processing_status" not in message_columns:
+            cursor.execute(
+                "ALTER TABLE messages ADD COLUMN processing_status "
+                "TEXT NOT NULL DEFAULT 'received'"
+            )
+        if "processing_started_at" not in message_columns:
+            cursor.execute(
+                "ALTER TABLE messages ADD COLUMN processing_started_at DATETIME"
+            )
         cursor.execute("""
                 CREATE TABLE IF NOT EXISTS debts (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -120,8 +136,75 @@ def save_message_to_database(
         con.commit()
         return True
     except sqlite3.IntegrityError:
-        print(f"Message with ID {message_id} already exists in the database.")
+        logger.debug(
+            "Message already exists",
+            extra={"message_id": message_id},
+        )
         return False
+    finally:
+        con.close()
+
+
+def start_message_processing(
+    message_id: str,
+    sender_id: str,
+    sender_phone_number: str,
+    message_text: str,
+) -> bool:
+    con = sqlite3.connect(DATABASE_PATH)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        row = con.execute(
+            "SELECT processing_status FROM messages WHERE message_id = ?",
+            (message_id,),
+        ).fetchone()
+        if row and row[0] in {"processing", "completed"}:
+            con.rollback()
+            return False
+        if row:
+            con.execute(
+                """
+                UPDATE messages
+                SET processing_status = 'processing',
+                    processing_started_at = CURRENT_TIMESTAMP
+                WHERE message_id = ?
+                """,
+                (message_id,),
+            )
+        else:
+            con.execute(
+                """
+                INSERT INTO messages (
+                    message_id, sender_id, sender_phone_number, message_text,
+                    processing_status, processing_started_at
+                )
+                VALUES (?, ?, ?, ?, 'processing', CURRENT_TIMESTAMP)
+                """,
+                (message_id, sender_id, sender_phone_number, message_text),
+            )
+        con.commit()
+        return True
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+
+def finish_message_processing(message_id: str, status: str) -> None:
+    if status not in {"completed", "failed"}:
+        raise ValueError(f"Invalid message processing status: {status}")
+    con = sqlite3.connect(DATABASE_PATH)
+    try:
+        con.execute(
+            """
+            UPDATE messages
+            SET processing_status = ?, processing_started_at = NULL
+            WHERE message_id = ?
+            """,
+            (status, message_id),
+        )
+        con.commit()
     finally:
         con.close()
 

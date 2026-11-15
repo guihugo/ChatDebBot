@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -7,6 +8,11 @@ from database.connection import initialize_database
 from services.whatsapp import send_message, send_message_template
 from routes.webhook import router
 from services.reminders import reminder_worker
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+)
 
 class Message(BaseModel):
     template_name: str

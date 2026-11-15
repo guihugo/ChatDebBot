@@ -49,6 +49,28 @@ class MessageParserTests(unittest.TestCase):
             (date.today() + timedelta(days=30)).isoformat(),
         )
 
+    def test_parses_short_debt_format_with_description(self):
+        result = parse_message(
+            {"message_text": "500 Gabriel para 20 dias - Aeroporto"}
+        )
+
+        self.assertEqual(result["intent"], "CREATE_DEBT")
+        self.assertEqual(result["entities"]["person"], "Gabriel")
+        self.assertEqual(result["entities"]["amount"], 500.0)
+        self.assertEqual(result["entities"]["description"], "Aeroporto")
+
+    def test_recognizes_debt_listing_phrases_without_using_question_word_as_name(self):
+        result = parse_message({"message_text": "Quem me deve?"})
+
+        self.assertEqual(result["intent"], "LIST_DEBTS")
+        self.assertIsNone(result["entities"]["person"])
+
+    def test_recognizes_debt_listing_without_accent(self):
+        result = parse_message({"message_text": "Dividas de Fabio"})
+
+        self.assertEqual(result["intent"], "LIST_DEBTS")
+        self.assertEqual(result["entities"]["person"], "Fabio")
+
 
 if __name__ == "__main__":
     unittest.main()
