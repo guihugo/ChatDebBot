@@ -27,6 +27,7 @@ def initialize_database():
                         debtor_name TEXT NOT NULL,
                         amount REAL NOT NULL,
                         due_date DATE NOT NULL,
+                        description TEXT,
                         status TEXT NOT NULL,
                         reminder_sent INTEGER NOT NULL DEFAULT 0,
                         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -43,6 +44,8 @@ def initialize_database():
             cursor.execute(
                 "ALTER TABLE debts ADD COLUMN reminder_sent INTEGER NOT NULL DEFAULT 0"
             )
+        if "description" not in debt_columns:
+            cursor.execute("ALTER TABLE debts ADD COLUMN description TEXT")
         cursor.execute("""
                 CREATE TABLE IF NOT EXISTS pending_debts (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,9 +53,17 @@ def initialize_database():
                         debtor_name TEXT NOT NULL,
                         amount REAL NOT NULL,
                         due_date DATE NOT NULL,
+                        description TEXT,
                         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
         """)
+        pending_debt_columns = {
+            row[1] for row in cursor.execute("PRAGMA table_info(pending_debts)")
+        }
+        if "description" not in pending_debt_columns:
+            cursor.execute(
+                "ALTER TABLE pending_debts ADD COLUMN description TEXT"
+            )
         cursor.execute("""
                 CREATE TABLE IF NOT EXISTS pending_actions (
                         sender_phone_number TEXT PRIMARY KEY,
@@ -145,6 +156,7 @@ def save_debt_to_database(
     amount: float,
     due_date: str,
     status: str,
+    description: str | None = None,
 ):
     """
     Saves a debt record to the SQLite database.
@@ -161,11 +173,11 @@ def save_debt_to_database(
         cursor.execute(
             """
             INSERT INTO debts (
-                owner_phone_number, debtor_name, amount, due_date, status
+                owner_phone_number, debtor_name, amount, due_date, description, status
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?)
         """,
-            (owner_phone_number, debtor_name, amount, due_date, status),
+            (owner_phone_number, debtor_name, amount, due_date, description, status),
         )
         con.commit()
     finally:
@@ -177,6 +189,7 @@ def save_pending_debt(
     debtor_name: str,
     amount: float,
     due_date: str,
+    description: str | None = None,
 ) -> None:
     """Stores the debt details until the user confirms the action."""
     con = sqlite3.connect(DATABASE_PATH)
@@ -184,16 +197,17 @@ def save_pending_debt(
         con.execute(
             """
             INSERT INTO pending_debts (
-                sender_phone_number, debtor_name, amount, due_date
+                sender_phone_number, debtor_name, amount, due_date, description
             )
-            VALUES (?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(sender_phone_number) DO UPDATE SET
                 debtor_name = excluded.debtor_name,
                 amount = excluded.amount,
                 due_date = excluded.due_date,
+                description = excluded.description,
                 timestamp = CURRENT_TIMESTAMP
             """,
-            (sender_phone_number, debtor_name, amount, due_date),
+            (sender_phone_number, debtor_name, amount, due_date, description),
         )
         con.commit()
     finally:
@@ -205,7 +219,7 @@ def get_pending_debt(sender_phone_number: str):
     try:
         cursor = con.execute(
             """
-            SELECT debtor_name, amount, due_date
+            SELECT debtor_name, amount, due_date, description
             FROM pending_debts
             WHERE sender_phone_number = ?
             """,
@@ -219,6 +233,7 @@ def get_pending_debt(sender_phone_number: str):
             "debtor_name": row[0],
             "amount": row[1],
             "due_date": row[2],
+            "description": row[3],
         }
     finally:
         con.close()
@@ -344,6 +359,7 @@ def get_debtor_names(owner_phone_number: str) -> list[str]:
             SELECT DISTINCT debtor_name
             FROM debts
             WHERE owner_phone_number = ?
+              AND status = 'debt'
             ORDER BY debtor_name
             """,
             (owner_phone_number,),
@@ -368,9 +384,12 @@ def get_debts_from_person(owner_phone_number: str, debtor_name: str):
         cursor = con.cursor()
         cursor.execute(
             """
-            SELECT id, debtor_name, amount, due_date, status, timestamp
+            SELECT id, debtor_name, amount, due_date, description, status, timestamp
             FROM debts
-            WHERE owner_phone_number = ? AND debtor_name = ?
+            WHERE owner_phone_number = ?
+              AND status = 'debt'
+              AND debtor_name = ?
+              AND status = 'debt'
         """,
             (owner_phone_number, debtor_name),
         )
@@ -381,12 +400,50 @@ def get_debts_from_person(owner_phone_number: str, debtor_name: str):
                 "debtor_name": row[1],
                 "amount": row[2],
                 "due_date": row[3],
-                "status": row[4],
-                "timestamp": row[5],
+                "description": row[4],
+                "status": row[5],
+                "timestamp": row[6],
             }
             for row in rows
         ]
         return debts
+    finally:
+        con.close()
+
+
+def get_open_debts(
+    owner_phone_number: str,
+    debtor_name: str,
+    amount: float | None = None,
+):
+    con = sqlite3.connect(DATABASE_PATH)
+    try:
+        query = """
+            SELECT id, debtor_name, amount, due_date, description, status, timestamp
+            FROM debts
+            WHERE owner_phone_number = ?
+              AND status = 'debt'
+              AND debtor_name = ?
+              AND status = 'debt'
+        """
+        parameters: list = [owner_phone_number, debtor_name]
+        if amount is not None:
+            query += " AND amount = ?"
+            parameters.append(amount)
+        query += " ORDER BY due_date, id"
+        rows = con.execute(query, parameters).fetchall()
+        return [
+            {
+                "id": row[0],
+                "debtor_name": row[1],
+                "amount": row[2],
+                "due_date": row[3],
+                "description": row[4],
+                "status": row[5],
+                "timestamp": row[6],
+            }
+            for row in rows
+        ]
     finally:
         con.close()
 
@@ -397,9 +454,10 @@ def get_all_debts(owner_phone_number: str):
     try:
         cursor = con.execute(
             """
-            SELECT id, debtor_name, amount, due_date, status, timestamp
+            SELECT id, debtor_name, amount, due_date, description, status, timestamp
             FROM debts
             WHERE owner_phone_number = ?
+              AND status = 'debt'
             ORDER BY due_date, id
             """,
             (owner_phone_number,),
@@ -410,8 +468,9 @@ def get_all_debts(owner_phone_number: str):
                 "debtor_name": row[1],
                 "amount": row[2],
                 "due_date": row[3],
-                "status": row[4],
-                "timestamp": row[5],
+                "description": row[4],
+                "status": row[5],
+                "timestamp": row[6],
             }
             for row in cursor.fetchall()
         ]
@@ -423,7 +482,7 @@ def get_debts_ready_for_reminder():
     try:
         cursor = con.execute(
             """
-            SELECT id, owner_phone_number, debtor_name, amount, due_date
+            SELECT id, owner_phone_number, debtor_name, amount, due_date, description
             FROM debts
             WHERE status = 'debt'
               AND reminder_sent = 0
@@ -438,6 +497,7 @@ def get_debts_ready_for_reminder():
                 "debtor_name": row[2],
                 "amount": row[3],
                 "due_date": row[4],
+                "description": row[5],
             }
             for row in cursor.fetchall()
         ]

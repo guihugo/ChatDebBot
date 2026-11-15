@@ -29,6 +29,26 @@ class MessageParserTests(unittest.TestCase):
 
         self.assertEqual(result["entities"]["amount"], 12.5)
 
+    def test_extracts_labeled_description(self):
+        result = parse_message(
+            {"message_text": "500 Fabio para 30 dias descrição: almoço"}
+        )
+
+        self.assertEqual(result["entities"]["description"], "almoço")
+
+    def test_extracts_description_after_dash(self):
+        result = parse_message({"message_text": "500 Fabio - compra do mercado"})
+
+        self.assertEqual(result["entities"]["description"], "compra do mercado")
+
+    def test_accepts_due_date_without_daqui(self):
+        result = parse_message({"message_text": "Jorge me deve 200 para 30 dias"})
+
+        self.assertEqual(
+            result["entities"]["due_date"],
+            (date.today() + timedelta(days=30)).isoformat(),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

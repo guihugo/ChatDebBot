@@ -22,7 +22,10 @@ QUESTION_WORDS = ["quanto", "quem", "qual", "quais", "onde"]
 
 
 def extract_due_date(message_text: str) -> str:
-    match = re.search(r"\bdaqui\s+(\d+)\s+dias?\b", message_text)
+    match = re.search(
+        r"\b(?:daqui|para)\s+(\d+)\s+dias?\b",
+        message_text,
+    )
     if not match:
         return date.today().isoformat()
 
@@ -30,10 +33,25 @@ def extract_due_date(message_text: str) -> str:
     return due_date.isoformat()
 
 
+def extract_description(message_text: str) -> str | None:
+    labeled = re.search(
+        r"\bdescri(?:ção|cao)\s*:\s*(.+)$",
+        message_text,
+        re.IGNORECASE,
+    )
+    if labeled:
+        return labeled.group(1).strip()
+
+    separator = re.search(r"\s+-\s+(.+)$", message_text)
+    return separator.group(1).strip() if separator else None
+
+
 def parse_message(message):
-    message_text = message.get("message_text", "").lower()
+    original_text = message.get("message_text", "")
+    message_text = original_text.lower()
     words = message_text.split()
     due_date = extract_due_date(message_text)
+    description = extract_description(original_text)
 
     # 1. Extract amounts
     amount_matches = re.findall(
@@ -90,6 +108,7 @@ def parse_message(message):
             "amount": amounts[0] if amounts else None,
             "person": name,
             "due_date": due_date,
+            "description": description,
         },
         "needs_confirmation": True
     }

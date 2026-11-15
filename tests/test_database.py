@@ -43,7 +43,7 @@ class DatabaseTests(unittest.TestCase):
 
         self.assertEqual(
             [debt["debtor_name"] for debt in debts],
-            ["Fabio", "Maria"],
+            ["Fabio"],
         )
 
     def test_paid_reminder_updates_only_the_owner_debt(self):
@@ -55,8 +55,8 @@ class DatabaseTests(unittest.TestCase):
         self.assertTrue(connection.mark_debt_as_paid(debt_id, "user-a"))
         self.assertFalse(connection.mark_debt_as_paid(debt_id, "user-b"))
         self.assertEqual(
-            connection.get_debts_from_person("user-a", "Fabio")[0]["status"],
-            "paid",
+            connection.get_debts_from_person("user-a", "Fabio"),
+            [],
         )
 
 

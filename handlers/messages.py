@@ -8,6 +8,7 @@ from database.connection import (
     get_all_debts,
     get_debts_from_person,
     get_debtor_names,
+    get_open_debts,
     get_pending_action,
     get_pending_debt,
     get_pending_selection,
@@ -106,17 +107,33 @@ async def message_received_handler(message: dict):
             
     if parsed_message["intent"] == "REGISTER_PAYMENT":
         print(f"Received payment registration message from {message['name']}.")
-        save_debt_to_database(
+        person_choices = find_person_choices(
+            message["sender_phone_number"],
+            parsed_message["entities"]["person"],
+        )
+        if len(person_choices) > 1:
+            return await ask_person_choice(
+                message,
+                action="register_payment",
+                payload={"amount": parsed_message["entities"]["amount"]},
+                choices=person_choices,
+            )
+        person = person_choices[0] if person_choices else parsed_message["entities"]["person"]
+        debts = get_open_debts(
             owner_phone_number=message["sender_phone_number"],
-            debtor_name=parsed_message["entities"]["person"],
+            debtor_name=person,
             amount=parsed_message["entities"]["amount"],
-            due_date=parsed_message["entities"]["due_date"],
-            status="paid"
         )
+        if len(debts) > 1:
+            return await ask_payment_choice(message, debts)
+        if len(debts) == 1:
+            return await mark_payment_for_debt(message, debts[0]["id"])
         await send_message(
-            f"{message['sender_phone_number']}",
-            f"Olá, {message['name']}! O pagamento de {parsed_message['entities']['amount']} de {parsed_message['entities']['person']} foi registrado com sucesso."
+            message["sender_phone_number"],
+            f"Não encontrei uma cobrança em aberto de "
+            f"R${parsed_message['entities']['amount']:.2f} para {person}.",
         )
+        return {"status": "payment_debt_not_found", "payload": message}
     elif parsed_message["intent"] == "LIST_DEBTS":
         return await list_debts_for_person(
             message,
@@ -135,6 +152,7 @@ async def message_received_handler(message: dict):
                 payload={
                     "amount": parsed_message["entities"]["amount"],
                     "due_date": parsed_message["entities"]["due_date"],
+                    "description": parsed_message["entities"]["description"],
                 },
                 choices=person_choices,
             )
@@ -146,6 +164,7 @@ async def message_received_handler(message: dict):
             debtor_name=parsed_message["entities"]["person"],
             amount=parsed_message["entities"]["amount"],
             due_date=due_date,
+            description=parsed_message["entities"]["description"],
         )
         await send_button_message(
             phone_number=message["sender_phone_number"],
@@ -153,7 +172,8 @@ async def message_received_handler(message: dict):
                 f"Olá, {message['name']}! Você gostaria de confirmar a cobrança de "
                 f"R${parsed_message['entities']['amount']:.2f} para "
                 f"{parsed_message['entities']['person']}, com vencimento em "
-                f"{format_due_date(due_date)}?"
+                f"{format_due_date(due_date)}"
+                f"{format_description(parsed_message['entities']['description'])}?"
             ),
             buttons=[
                 {
@@ -195,6 +215,7 @@ async def handle_debt_confirmation(message: dict):
             f"Olá, {message['name']}! A cobrança de "
             f"R${pending_debt['amount']:.2f} para {pending_debt['debtor_name']}, "
             f"com vencimento em {format_due_date(pending_debt['due_date'])}, "
+            f"{format_description(pending_debt['description'])} "
             "foi registrada com sucesso."
         )
     elif message["button_payload"] == "decline_create_debt":
@@ -244,10 +265,29 @@ async def handle_person_selection(message: dict):
     if index < 0 or index >= len(choices):
         return {"status": "invalid_person_selection", "payload": message}
 
-    person = choices[index]
     delete_pending_selection(message["sender_phone_number"])
+    if pending["action"] == "register_payment":
+        debt = pending["payload"]["choices"][index]
+        return await mark_payment_for_debt(message, debt["id"])
+
+    person = choices[index]
     if pending["action"] == "list_debts":
         return await list_debts_for_person(message, person)
+    if pending["action"] == "register_payment":
+        debts = get_open_debts(
+            owner_phone_number=message["sender_phone_number"],
+            debtor_name=person,
+            amount=pending["payload"]["amount"],
+        )
+        if len(debts) > 1:
+            return await ask_payment_choice(message, debts)
+        if len(debts) == 1:
+            return await mark_payment_for_debt(message, debts[0]["id"])
+        await send_message(
+            message["sender_phone_number"],
+            "Não encontrei uma cobrança em aberto para essa pessoa.",
+        )
+        return {"status": "payment_debt_not_found", "payload": message}
 
     return await create_debt_from_selection(message, person, pending["payload"])
 
@@ -268,6 +308,16 @@ async def handle_text_selection(message: dict, pending: dict):
     delete_pending_selection(message["sender_phone_number"])
     if pending["action"] == "list_debts":
         return await list_debts_for_person(message, matches[0])
+    if pending["action"] == "register_payment":
+        debts = get_open_debts(
+            owner_phone_number=message["sender_phone_number"],
+            debtor_name=matches[0],
+            amount=pending["payload"]["amount"],
+        )
+        if len(debts) == 1:
+            delete_pending_selection(message["sender_phone_number"])
+            return await mark_payment_for_debt(message, debts[0]["id"])
+        return await ask_payment_choice(message, debts)
     return await create_debt_from_selection(
         message, matches[0], pending["payload"]
     )
@@ -281,13 +331,15 @@ async def create_debt_from_selection(
         debtor_name=person,
         amount=payload["amount"],
         due_date=payload["due_date"],
+        description=payload.get("description"),
     )
     await send_button_message(
         phone_number=message["sender_phone_number"],
         message=(
             f"Olá, {message['name']}! Você gostaria de confirmar a cobrança de "
             f"R${payload['amount']:.2f} para {person}, com vencimento em "
-            f"{format_due_date(payload['due_date'])}?"
+            f"{format_due_date(payload['due_date'])}"
+            f"{format_description(payload.get('description'))}?"
         ),
         buttons=[
             {"type": "reply", "reply": {
@@ -373,6 +425,44 @@ def find_person_choices(owner_phone_number: str, person: str) -> list[str]:
     ]
 
 
+async def ask_payment_choice(message: dict, debts: list[dict]):
+    save_pending_selection(
+        sender_phone_number=message["sender_phone_number"],
+        action="register_payment",
+        payload={"choices": debts},
+    )
+    buttons = [
+        {
+            "type": "reply",
+            "reply": {
+                "id": f"select_person_{index}",
+                "title": f"R${debt['amount']:.2f} {format_due_date(debt['due_date'])}"[:20],
+            },
+        }
+        for index, debt in enumerate(debts[:3])
+    ]
+    await send_button_message(
+        phone_number=message["sender_phone_number"],
+        message="É sobre qual dessas cobranças?",
+        buttons=buttons,
+    )
+    return {"status": "payment_selection_requested", "payload": message}
+
+
+async def mark_payment_for_debt(message: dict, debt_id: int):
+    updated = mark_debt_as_paid(
+        debt_id=debt_id,
+        owner_phone_number=message["sender_phone_number"],
+    )
+    response = (
+        "Pagamento atualizado com sucesso!"
+        if updated
+        else "Não encontrei essa cobrança ou ela já foi atualizada."
+    )
+    await send_message(message["sender_phone_number"], response)
+    return {"status": "payment_registered", "payload": message}
+
+
 async def ask_person_choice(
     message: dict,
     action: str,
@@ -456,6 +546,7 @@ def format_debts_message(name: str, person: str, debts: list) -> str:
         lines.append(
             f"• Dívida #{count}\n"
             f"  Devedor: {debt['debtor_name']}\n"
+            f"  Descrição: {debt.get('description') or 'Não informada'}\n"
             f"  Valor: R${debt['amount']:.2f}\n"
             f"  Vencimento: {format_due_date(debt['due_date'])}\n"
             f"  Status: {status}\n"
@@ -471,3 +562,7 @@ def format_due_date(due_date: str) -> str:
         return date.fromisoformat(due_date).strftime("%d/%m/%Y")
     except (TypeError, ValueError):
         return due_date
+
+
+def format_description(description: str | None) -> str:
+    return f", descrição: {description}" if description else ""

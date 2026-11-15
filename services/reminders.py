@@ -8,11 +8,17 @@ REMINDER_INTERVAL_SECONDS = 60
 
 async def send_due_debt_reminders() -> None:
     for debt in get_debts_ready_for_reminder():
+        description = (
+            f" Descrição: {debt['description']}."
+            if debt["description"]
+            else ""
+        )
         result = await send_button_message(
             phone_number=debt["owner_phone_number"],
             message=(
                 f"Olá! Lembrete: você tem uma cobrança de "
                 f"R${debt['amount']:.2f} para {debt['debtor_name']}. "
+                f"{description} Essa cobrança já foi paga?"
                 "Essa cobrança já foi paga?"
             ),
             buttons=[
