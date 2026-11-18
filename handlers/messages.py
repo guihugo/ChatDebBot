@@ -197,12 +197,13 @@ async def _process_message(message: dict):
         if person_choices:
             parsed_message["entities"]["person"] = person_choices[0]
         due_date = parsed_message["entities"]["due_date"]
-        save_pending_debt(
+        confirmation_token = save_pending_debt(
             sender_phone_number=message["sender_phone_number"],
             debtor_name=parsed_message["entities"]["person"],
             amount=parsed_message["entities"]["amount"],
             due_date=due_date,
             description=parsed_message["entities"]["description"],
+            source_message_id=message["message_id"],
         )
         await send_button_message(
             phone_number=message["sender_phone_number"],
@@ -217,14 +218,14 @@ async def _process_message(message: dict):
                 {
                     "type": "reply",
                     "reply": {
-                        "id": "confirm_create_debt",
+                        "id": f"confirm_create_debt_{confirmation_token}",
                         "title": "Confirmar Dívida"
                     }
                 },
                 {
                     "type": "reply",
                     "reply": {
-                        "id": "decline_create_debt",
+                        "id": f"decline_create_debt_{confirmation_token}",
                         "title": "Recusar Dívida"
                     }
                 }
@@ -240,7 +241,15 @@ async def _process_message(message: dict):
 
 async def handle_debt_confirmation(message: dict):
     """Processes the confirmation button for the user's pending debt."""
-    pending_debt = get_pending_debt(message["sender_phone_number"])
+    button_payload = message["button_payload"]
+    confirmation_token = button_payload.removeprefix("confirm_create_debt_")
+    confirmation_token = confirmation_token.removeprefix("decline_create_debt_")
+    if confirmation_token == button_payload:
+        confirmation_token = None
+    pending_debt = get_pending_debt(
+        message["sender_phone_number"],
+        confirmation_token=confirmation_token,
+    )
 
     if not pending_debt:
         await send_message(
@@ -249,11 +258,15 @@ async def handle_debt_confirmation(message: dict):
         )
         return {"status": "pending_debt_not_found", "payload": message}
 
-    if message["button_payload"] == "confirm_create_debt":
+    if button_payload.startswith("confirm_create_debt_"):
         save_debt_to_database(
             owner_phone_number=message["sender_phone_number"],
             status="debt",
-            **pending_debt,
+            debtor_name=pending_debt["debtor_name"],
+            amount=pending_debt["amount"],
+            due_date=pending_debt["due_date"],
+            description=pending_debt["description"],
+            source_message_id=pending_debt["source_message_id"],
         )
         delete_pending_debt(message["sender_phone_number"])
         response = (
@@ -263,7 +276,7 @@ async def handle_debt_confirmation(message: dict):
             f"{format_description(pending_debt['description'])} "
             "foi registrada com sucesso."
         )
-    elif message["button_payload"] == "decline_create_debt":
+    elif button_payload.startswith("decline_create_debt_"):
         delete_pending_debt(message["sender_phone_number"])
         response = "Tudo bem, a cobrança não foi registrada."
     else:
@@ -378,12 +391,13 @@ async def handle_text_selection(message: dict, pending: dict):
 async def create_debt_from_selection(
     message: dict, person: str, payload: dict
 ):
-    save_pending_debt(
+    confirmation_token = save_pending_debt(
         sender_phone_number=message["sender_phone_number"],
         debtor_name=person,
         amount=payload["amount"],
         due_date=payload["due_date"],
         description=payload.get("description"),
+        source_message_id=message["message_id"],
     )
     await send_button_message(
         phone_number=message["sender_phone_number"],
@@ -395,10 +409,10 @@ async def create_debt_from_selection(
         ),
         buttons=[
             {"type": "reply", "reply": {
-                "id": "confirm_create_debt", "title": "Confirmar Dívida"
+                "id": f"confirm_create_debt_{confirmation_token}", "title": "Confirmar Dívida"
             }},
             {"type": "reply", "reply": {
-                "id": "decline_create_debt", "title": "Recusar Dívida"
+                "id": f"decline_create_debt_{confirmation_token}", "title": "Recusar Dívida"
             }},
         ],
     )

@@ -1,6 +1,7 @@
 import sqlite3
 import json
 import logging
+import uuid
 from os import getenv
 
 
@@ -46,6 +47,7 @@ def initialize_database():
                         description TEXT,
                         status TEXT NOT NULL,
                         reminder_sent INTEGER NOT NULL DEFAULT 0,
+                        source_message_id TEXT,
                         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                 )        
         """)
@@ -62,6 +64,15 @@ def initialize_database():
             )
         if "description" not in debt_columns:
             cursor.execute("ALTER TABLE debts ADD COLUMN description TEXT")
+        if "source_message_id" not in debt_columns:
+            cursor.execute("ALTER TABLE debts ADD COLUMN source_message_id TEXT")
+        cursor.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_debts_source_message_id
+            ON debts(source_message_id)
+            WHERE source_message_id IS NOT NULL
+            """
+        )
         cursor.execute("""
                 CREATE TABLE IF NOT EXISTS pending_debts (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,6 +81,8 @@ def initialize_database():
                         amount REAL NOT NULL,
                         due_date DATE NOT NULL,
                         description TEXT,
+                        confirmation_token TEXT NOT NULL,
+                        source_message_id TEXT,
                         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
         """)
@@ -79,6 +92,14 @@ def initialize_database():
         if "description" not in pending_debt_columns:
             cursor.execute(
                 "ALTER TABLE pending_debts ADD COLUMN description TEXT"
+            )
+        if "confirmation_token" not in pending_debt_columns:
+            cursor.execute(
+                "ALTER TABLE pending_debts ADD COLUMN confirmation_token TEXT"
+            )
+        if "source_message_id" not in pending_debt_columns:
+            cursor.execute(
+                "ALTER TABLE pending_debts ADD COLUMN source_message_id TEXT"
             )
         cursor.execute("""
                 CREATE TABLE IF NOT EXISTS pending_actions (
@@ -240,6 +261,7 @@ def save_debt_to_database(
     due_date: str,
     status: str,
     description: str | None = None,
+    source_message_id: str | None = None,
 ):
     """
     Saves a debt record to the SQLite database.
@@ -255,14 +277,24 @@ def save_debt_to_database(
         cursor = con.cursor()
         cursor.execute(
             """
-            INSERT INTO debts (
-                owner_phone_number, debtor_name, amount, due_date, description, status
+            INSERT OR IGNORE INTO debts (
+                owner_phone_number, debtor_name, amount, due_date, description,
+                status, source_message_id
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-            (owner_phone_number, debtor_name, amount, due_date, description, status),
+            (
+                owner_phone_number,
+                debtor_name,
+                amount,
+                due_date,
+                description,
+                status,
+                source_message_id,
+            ),
         )
         con.commit()
+        return cursor.rowcount == 1
     finally:
         con.close()
 
@@ -273,40 +305,59 @@ def save_pending_debt(
     amount: float,
     due_date: str,
     description: str | None = None,
-) -> None:
+    source_message_id: str | None = None,
+) -> str:
     """Stores the debt details until the user confirms the action."""
+    confirmation_token = uuid.uuid4().hex
     con = sqlite3.connect(DATABASE_PATH)
     try:
         con.execute(
             """
             INSERT INTO pending_debts (
-                sender_phone_number, debtor_name, amount, due_date, description
+                sender_phone_number, debtor_name, amount, due_date, description,
+                confirmation_token, source_message_id
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(sender_phone_number) DO UPDATE SET
                 debtor_name = excluded.debtor_name,
                 amount = excluded.amount,
                 due_date = excluded.due_date,
                 description = excluded.description,
+                confirmation_token = excluded.confirmation_token,
+                source_message_id = excluded.source_message_id,
                 timestamp = CURRENT_TIMESTAMP
             """,
-            (sender_phone_number, debtor_name, amount, due_date, description),
+            (
+                sender_phone_number,
+                debtor_name,
+                amount,
+                due_date,
+                description,
+                confirmation_token,
+                source_message_id,
+            ),
         )
         con.commit()
+        return confirmation_token
     finally:
         con.close()
 
 
-def get_pending_debt(sender_phone_number: str):
+def get_pending_debt(
+    sender_phone_number: str,
+    confirmation_token: str | None = None,
+):
     con = sqlite3.connect(DATABASE_PATH)
     try:
         cursor = con.execute(
             """
-            SELECT debtor_name, amount, due_date, description
+            SELECT debtor_name, amount, due_date, description,
+                   confirmation_token, source_message_id
             FROM pending_debts
             WHERE sender_phone_number = ?
+              AND (? IS NULL OR confirmation_token = ?)
             """,
-            (sender_phone_number,),
+            (sender_phone_number, confirmation_token, confirmation_token),
         )
         row = cursor.fetchone()
         if not row:
@@ -317,6 +368,8 @@ def get_pending_debt(sender_phone_number: str):
             "amount": row[1],
             "due_date": row[2],
             "description": row[3],
+            "confirmation_token": row[4],
+            "source_message_id": row[5],
         }
     finally:
         con.close()

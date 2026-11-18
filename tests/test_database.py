@@ -59,6 +59,40 @@ class DatabaseTests(unittest.TestCase):
             [],
         )
 
+    def test_pending_confirmation_token_and_debt_source_are_idempotent(self):
+        token = connection.save_pending_debt(
+            "user-a",
+            "Joao",
+            100,
+            "2026-12-01",
+            source_message_id="message-1",
+        )
+        pending = connection.get_pending_debt("user-a", token)
+
+        self.assertEqual(pending["confirmation_token"], token)
+        self.assertEqual(pending["source_message_id"], "message-1")
+        self.assertTrue(
+            connection.save_debt_to_database(
+                "user-a",
+                "Joao",
+                100,
+                "2026-12-01",
+                "debt",
+                source_message_id="message-1",
+            )
+        )
+        self.assertFalse(
+            connection.save_debt_to_database(
+                "user-a",
+                "Joao",
+                100,
+                "2026-12-01",
+                "debt",
+                source_message_id="message-1",
+            )
+        )
+        self.assertEqual(len(connection.get_all_debts("user-a")), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

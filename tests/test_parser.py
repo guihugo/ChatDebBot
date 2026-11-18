@@ -71,6 +71,52 @@ class MessageParserTests(unittest.TestCase):
         self.assertEqual(result["intent"], "LIST_DEBTS")
         self.assertEqual(result["entities"]["person"], "Fabio")
 
+    def test_does_not_parse_multiline_note_as_debt(self):
+        result = parse_message({
+            "message_text":
+                "Léo da empresa Executive service\n"
+                "Valor por van:\n\n"
+                "13/11 - R$ 1.500,00\n"
+                "14/11"
+        })
+
+        self.assertEqual(result["intent"], "UNKNOWN")
+
+    def test_does_not_parse_exact_multiline_van_note_as_debt(self):
+        result = parse_message({
+            "message_text":
+                "Léo da empresa Executive service\n"
+                "Valor por van:\n\n"
+                "13/11 - R$ 1.500,00\n"
+                "14/11 - R$ 1.500,00\n"
+                "15/11 - R$ 1.000,00\n"
+                "16/11 - R$ 650,00\n\n"
+                "Total: R$ 4.650,00\n\n"
+                "——————————\n\n"
+                "Total R$ 9.300,00. Vencimento 30’dias"
+        })
+
+        self.assertEqual(result["intent"], "CREATE_DEBT")
+        self.assertEqual(result["entities"]["amount"], 9300.0)
+        self.assertEqual(result["entities"]["person"], "Léo")
+        self.assertEqual(
+            result["entities"]["description"],
+            "Executive service - Valor por van",
+        )
+        self.assertEqual(
+            result["entities"]["due_date"],
+            (date.today() + timedelta(days=30)).isoformat(),
+        )
+
+    def test_parses_brazilian_currency_amount(self):
+        result = parse_message({
+            "message_text": "Léo me deve R$ 1.500,00"
+        })
+
+        self.assertEqual(result["intent"], "CREATE_DEBT")
+        self.assertEqual(result["entities"]["person"], "Léo")
+        self.assertEqual(result["entities"]["amount"], 1500.0)
+
 
 if __name__ == "__main__":
     unittest.main()

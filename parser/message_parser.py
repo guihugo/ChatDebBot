@@ -32,6 +32,12 @@ def extract_due_date(message_text: str) -> str:
         message_text,
     )
     if not match:
+        match = re.search(
+            r"\bvencimento\s+(\d+)\s*[’'`]?dias?\b",
+            message_text,
+            re.IGNORECASE,
+        )
+    if not match:
         return date.today().isoformat()
 
     due_date = date.today() + timedelta(days=int(match.group(1)))
@@ -51,8 +57,101 @@ def extract_description(message_text: str) -> str | None:
     return separator.group(1).strip() if separator else None
 
 
+def parse_brazilian_amount(amount: str) -> float:
+    normalized = amount.replace(".", "").replace(",", ".")
+    return float(normalized)
+
+
+def extract_financial_person_and_description(original_text: str) -> tuple[str | None, str | None]:
+    lines = [line.strip() for line in original_text.splitlines() if line.strip()]
+    if not lines:
+        return None, None
+
+    first_line = lines[0]
+    person_match = re.match(
+        r"^([A-Za-zÀ-ÖØ-öø-ÿ]+)",
+        first_line,
+    )
+    person = person_match.group(1).capitalize() if person_match else None
+
+    description_parts = []
+    company_match = re.search(
+        r"\b(?:da\s+empresa|empresa)\s+(.+)$",
+        first_line,
+        re.IGNORECASE,
+    )
+    if company_match:
+        description_parts.append(company_match.group(1).strip(" .:-"))
+
+    for line in lines[1:]:
+        if re.match(r"(?i)^valor\s+por\s+", line):
+            description_parts.append(
+                line.rstrip(":").strip()
+            )
+            break
+
+    description = " - ".join(description_parts) if description_parts else None
+    return person, description
+
+
 def parse_message(message):
     original_text = message.get("message_text", "")
+
+    currency_amounts = re.findall(
+        r"R\$\s*\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?",
+        original_text,
+        re.IGNORECASE,
+    )
+    date_lines = re.findall(r"(?<!\d)\d{1,2}/\d{1,2}(?!\d)", original_text)
+    normalized_text = original_text.casefold()
+    looks_like_financial_statement = (
+        len(currency_amounts) >= 2
+        or (
+            len(date_lines) >= 2
+            and any(
+                keyword in normalized_text
+                for keyword in ("total", "valor por", "vencimento")
+            )
+        )
+    )
+    if looks_like_financial_statement:
+        amount_matches = re.findall(
+            r"\btotal\b\s*:?\s*R\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?)",
+            original_text,
+            re.IGNORECASE,
+        )
+        amounts = [
+            parse_brazilian_amount(amount)
+            for amount in amount_matches
+        ]
+        person, description = extract_financial_person_and_description(original_text)
+        return {
+            "intent": "CREATE_DEBT" if amounts and person else "UNKNOWN",
+            "entities": {
+                "amount": max(amounts) if amounts else None,
+                "person": person,
+                "due_date": extract_due_date(original_text),
+                "description": description,
+            },
+            "needs_confirmation": True,
+        }
+
+    if "\n" in original_text and not re.match(
+        r"^\s*(?:R\$\s*)?\d[\d.,]*\s+\S",
+        original_text,
+        re.IGNORECASE,
+    ):
+        return {
+            "intent": "UNKNOWN",
+            "entities": {
+                "amount": None,
+                "person": None,
+                "due_date": date.today().isoformat(),
+                "description": extract_description(original_text),
+            },
+            "needs_confirmation": True,
+        }
+
     message_text = original_text.lower()
     words = message_text.split()
     due_date = extract_due_date(message_text)
@@ -60,14 +159,20 @@ def parse_message(message):
 
     # 1. Extract amounts
     amount_matches = re.findall(
-        r"(?<!\w)\d+(?:[.,]\d{1,2})?(?!\w)",
-        message_text
+        r"R\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?)",
+        original_text,
+        re.IGNORECASE,
     )
+    if not amount_matches:
+        amount_matches = re.findall(
+            r"(?<![\d/])(\d+(?:[.,]\d{1,2})?)(?![\d/])",
+            message_text,
+        )
 
-    amounts = [
-        float(amount.replace(",", "."))
-        for amount in amount_matches
-    ]
+    amounts = []
+    for amount in amount_matches:
+        normalized = amount.replace(".", "").replace(",", ".")
+        amounts.append(float(normalized))
 
     has_number = len(amounts) > 0
 
@@ -106,7 +211,14 @@ def parse_message(message):
             name = candidate.capitalize()
             break
 
-    if intent == "UNKNOWN" and has_number and name:
+    is_short_debt_format = bool(
+        re.match(
+            r"^\s*(?:R\$\s*)?\d[\d.,]*\s+[^\d\n]+(?:\s+para\s+\d+\s+dias?)?",
+            original_text,
+            re.IGNORECASE,
+        )
+    )
+    if intent == "UNKNOWN" and has_number and name and is_short_debt_format:
         intent = "CREATE_DEBT"
 
     return {
